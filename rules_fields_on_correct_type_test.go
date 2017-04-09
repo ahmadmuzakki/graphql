@@ -3,9 +3,9 @@ package graphql_test
 import (
 	"testing"
 
-	"github.com/graphql-go/graphql"
-	"github.com/graphql-go/graphql/gqlerrors"
-	"github.com/graphql-go/graphql/testutil"
+	"github.com/ahmadmuzakki29/graphql"
+	"github.com/ahmadmuzakki29/graphql/gqlerrors"
+	"github.com/ahmadmuzakki29/graphql/testutil"
 )
 
 func TestValidate_FieldsOnCorrectType_ObjectFieldSelection(t *testing.T) {

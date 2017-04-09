@@ -5,10 +5,10 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/graphql-go/graphql"
-	"github.com/graphql-go/graphql/gqlerrors"
-	"github.com/graphql-go/graphql/language/location"
-	"github.com/graphql-go/graphql/testutil"
+	"github.com/ahmadmuzakki29/graphql"
+	"github.com/ahmadmuzakki29/graphql/gqlerrors"
+	"github.com/ahmadmuzakki29/graphql/language/location"
+	"github.com/ahmadmuzakki29/graphql/testutil"
 )
 
 var syncError = "sync"

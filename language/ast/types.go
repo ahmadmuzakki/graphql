@@ -1,7 +1,7 @@
 package ast
 
 import (
-	"github.com/graphql-go/graphql/language/kinds"
+	"github.com/ahmadmuzakki29/graphql/language/kinds"
 )
 
 type Type interface {
