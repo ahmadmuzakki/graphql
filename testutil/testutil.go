@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/graphql-go/graphql"
-	"github.com/graphql-go/graphql/language/ast"
-	"github.com/graphql-go/graphql/language/parser"
+	"github.com/ahmadmuzakki/graphql"
+	"github.com/ahmadmuzakki/graphql/language/ast"
+	"github.com/ahmadmuzakki/graphql/language/parser"
 )
 
 var (
@@ -302,7 +302,7 @@ func init() {
 				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
 					id, err := strconv.Atoi(p.Args["id"].(string))
 					if err != nil {
-					  return nil, err
+						return nil, err
 					}
 					return GetHuman(id), nil
 				},
