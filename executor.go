@@ -9,6 +9,7 @@ import (
 
 	"github.com/graphql-go/graphql/gqlerrors"
 	"github.com/graphql-go/graphql/language/ast"
+	"sync"
 )
 
 type ExecuteParams struct {
@@ -256,10 +257,13 @@ func executeFieldsSerially(p ExecuteFieldsParams) *Result {
 
 	finalResults := map[string]interface{}{}
 	for responseName, fieldASTs := range p.Fields {
-		resolved, state := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldASTs)
-		if state.hasNoFieldDefs {
+		fieldDef := fieldDefFromASTs(p.ExecutionContext, p.ParentType, fieldASTs)
+
+		if fieldDef == nil {
 			continue
 		}
+
+		resolved := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldDef, fieldASTs)
 		finalResults[responseName] = resolved
 	}
 
@@ -267,6 +271,12 @@ func executeFieldsSerially(p ExecuteFieldsParams) *Result {
 		Data:   finalResults,
 		Errors: p.ExecutionContext.Errors,
 	}
+}
+
+type asyncFieldResult struct {
+	ResponseName string
+	Value        interface{}
+	Error        interface{}
 }
 
 // Implements the "Evaluating selection sets" section of the spec for "read" mode.
@@ -278,13 +288,47 @@ func executeFields(p ExecuteFieldsParams) *Result {
 		p.Fields = map[string][]*ast.Field{}
 	}
 
+	wg := sync.WaitGroup{}
 	finalResults := map[string]interface{}{}
+	asyncResults := make(chan asyncFieldResult, len(p.Fields))
 	for responseName, fieldASTs := range p.Fields {
-		resolved, state := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldASTs)
-		if state.hasNoFieldDefs {
+		fieldDef := fieldDefFromASTs(p.ExecutionContext, p.ParentType, fieldASTs)
+
+		if fieldDef == nil {
 			continue
 		}
-		finalResults[responseName] = resolved
+
+		if fieldDef.AsyncResolve {
+			wg.Add(1)
+			go func(responseName string, fieldASTs []*ast.Field) {
+				defer func() {
+					if r := recover(); r != nil {
+						asyncResults <- asyncFieldResult{Error: r}
+					}
+					wg.Done()
+				}()
+
+				resolved := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldDef, fieldASTs)
+				asyncResults <- asyncFieldResult{
+					Value:        resolved,
+					ResponseName: responseName,
+				}
+			}(responseName, fieldASTs)
+		} else {
+			resolved := resolveField(p.ExecutionContext, p.ParentType, p.Source, fieldDef, fieldASTs)
+			finalResults[responseName] = resolved
+		}
+	}
+	wg.Wait()
+	close(asyncResults)
+
+	// collect results from goroutine
+	for result := range asyncResults {
+		// re-panic if a goroutine panicked
+		if result.Error != nil {
+			panic(result.Error)
+		}
+		finalResults[result.ResponseName] = result.Value
 	}
 
 	return &Result{
@@ -498,6 +542,16 @@ func getFieldEntryKey(node *ast.Field) string {
 	return ""
 }
 
+func fieldDefFromASTs(eCtx *ExecutionContext, parentType *Object, fieldASTs []*ast.Field) *FieldDefinition {
+	fieldAST := fieldASTs[0]
+	fieldName := ""
+	if fieldAST.Name != nil {
+		fieldName = fieldAST.Name.Value
+	}
+
+	return getFieldDef(eCtx.Schema, parentType, fieldName)
+}
+
 // Internal resolveField state
 type resolveFieldResultState struct {
 	hasNoFieldDefs bool
@@ -507,10 +561,10 @@ type resolveFieldResultState struct {
 // figures out the value that the field returns by calling its resolve function,
 // then calls completeValue to complete promises, serialize scalars, or execute
 // the sub-selection-set for objects.
-func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}, fieldASTs []*ast.Field) (result interface{}, resultState resolveFieldResultState) {
+func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}, fieldDef *FieldDefinition, fieldASTs []*ast.Field) (result interface{}) {
 	// catch panic from resolveFn
 	var returnType Output
-	defer func() (interface{}, resolveFieldResultState) {
+	defer func() interface{} {
 		if r := recover(); r != nil {
 
 			var err error
@@ -528,22 +582,17 @@ func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}
 				panic(gqlerrors.FormatError(err))
 			}
 			eCtx.Errors = append(eCtx.Errors, gqlerrors.FormatError(err))
-			return result, resultState
+			return result
 		}
-		return result, resultState
+		return result
 	}()
 
 	fieldAST := fieldASTs[0]
 	fieldName := ""
 	if fieldAST.Name != nil {
-		fieldName = fieldAST.Name.Value
+		fieldName = fieldDef.Name
 	}
 
-	fieldDef := getFieldDef(eCtx.Schema, parentType, fieldName)
-	if fieldDef == nil {
-		resultState.hasNoFieldDefs = true
-		return nil, resultState
-	}
 	returnType = fieldDef.Type
 	resolveFn := fieldDef.Resolve
 	if resolveFn == nil {
@@ -581,7 +630,7 @@ func resolveField(eCtx *ExecutionContext, parentType *Object, source interface{}
 	}
 
 	completed := completeValueCatchingError(eCtx, returnType, fieldASTs, info, result)
-	return completed, resultState
+	return completed
 }
 
 func completeValueCatchingError(eCtx *ExecutionContext, returnType Type, fieldASTs []*ast.Field, info ResolveInfo, result interface{}) (completed interface{}) {
@@ -791,10 +840,37 @@ func completeListValue(eCtx *ExecutionContext, returnType *List, fieldASTs []*as
 
 	itemType := returnType.OfType
 	completedResults := []interface{}{}
-	for i := 0; i < resultVal.Len(); i++ {
-		val := resultVal.Index(i).Interface()
-		completedItem := completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
-		completedResults = append(completedResults, completedItem)
+	if returnType.AsyncResolve {
+		// concurrently resolve list elements
+		wg := sync.WaitGroup{}
+		panics := make(chan interface{}, resultVal.Len())
+		for i := 0; i < resultVal.Len(); i++ {
+			wg.Add(1)
+			go func(j int) {
+				defer func() {
+					if r := recover(); r != nil {
+						panics <- r
+					}
+					wg.Done()
+				}()
+				val := resultVal.Index(j).Interface()
+				completedResults[j] = completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
+			}(i)
+		}
+		// wait for all routines to complete. then close the channel
+		wg.Wait()
+		close(panics)
+
+		// re-panic if a goroutine panicked
+		for p := range panics {
+			panic(p)
+		}
+	} else {
+		for i := 0; i < resultVal.Len(); i++ {
+			val := resultVal.Index(i).Interface()
+			completedItem := completeValueCatchingError(eCtx, itemType, fieldASTs, info, val)
+			completedResults = append(completedResults, completedItem)
+		}
 	}
 	return completedResults
 }

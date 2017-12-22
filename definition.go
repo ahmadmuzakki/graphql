@@ -625,6 +625,7 @@ type Field struct {
 	Resolve           FieldResolveFn
 	DeprecationReason string `json:"deprecationReason"`
 	Description       string `json:"description"`
+	AsyncResolve      bool
 }
 
 type FieldConfigArgument map[string]*ArgumentConfig
@@ -643,6 +644,7 @@ type FieldDefinition struct {
 	Args              []*Argument    `json:"args"`
 	Resolve           FieldResolveFn `json:"-"`
 	DeprecationReason string         `json:"deprecationReason"`
+	AsyncResolve      bool
 }
 
 type FieldArgument struct {
@@ -1223,9 +1225,9 @@ func (gt *InputObject) Error() error {
 //     })
 //
 type List struct {
-	OfType Type `json:"ofType"`
-
-	err error
+	OfType       Type `json:"ofType"`
+	AsyncResolve bool
+	err          error
 }
 
 func NewList(ofType Type) *List {
